@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<title>简记</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <button id="btnBack" class="icon" aria-label="返回上一层">‹</button>
+  <div id="crumbs"></div>
+  <button id="btnMenu" class="icon" aria-label="菜单">⋯</button>
+</header>
+
+<main id="main">
+  <section id="editor" hidden>
+    <input id="title" placeholder="标题" autocomplete="off">
+    <textarea id="content" placeholder="正文"></textarea>
+  </section>
+
+  <section id="childrenBox">
+    <div id="childHead">
+      <span id="childLabel">条目</span>
+      <button id="btnOutline" class="link">展开全部</button>
+    </div>
+    <ul id="list"></ul>
+    <div id="empty" hidden>还没有内容，点右下角 ＋ 新建</div>
+  </section>
+</main>
+
+<button id="fab" aria-label="新建">＋</button>
+
+<div id="sheetMask" hidden></div>
+<div id="sheet" hidden></div>
+
+<div id="dlgMask" hidden>
+  <div id="dlg">
+    <div id="dlgTitle"></div>
+    <div id="dlgBody"></div>
+    <div id="dlgBtns"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+<div id="render"></div>
+<input type="file" id="filePick" hidden>
+
+<script src="lib/cap/core.js"></script>
+<script src="lib/cap/synapse.js"></script>
+<script>window.synapse = window.outsystemsSynapse;</script>
+<script src="lib/cap/filesystem.js"></script>
+<script src="lib/cap/share.js"></script>
+<script src="lib/cap/preferences.js"></script>
+<script src="lib/cap/app.js"></script>
+<script src="lib/html2canvas.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
