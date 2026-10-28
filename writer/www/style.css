@@ -68,7 +68,7 @@ main { padding: 12px 16px 120px; max-width: 760px; margin: 0 auto; }
   display: flex; justify-content: space-between; align-items: center;
   font-size: 13px; color: var(--muted); padding: 4px 2px 8px; border-top: 1px solid var(--line);
 }
-#editor[hidden] + #childrenBox #childHead { border-top: 0; }
+#editor[hidden] ~ #childrenBox #childHead { border-top: 0; }
 .link { color: var(--accent); font-size: 13px; padding: 4px 2px; }
 #list { list-style: none; margin: 0; padding: 0; }
 .item {
@@ -88,6 +88,18 @@ main { padding: 12px 16px 120px; max-width: 760px; margin: 0 auto; }
 .item.lv1 { margin-left: 18px; } .item.lv2 { margin-left: 36px; } .item.lv3 { margin-left: 54px; }
 .item.lv4 { margin-left: 72px; } .item.lv5, .item.lv6, .item.lv7, .item.lv8 { margin-left: 90px; }
 .item[class*="lv"]:not(.lv0) { border-left: 3px solid var(--accent-soft); }
+
+#searchBox { margin-bottom: 12px; }
+#search {
+  width: 100%; height: 42px; padding: 0 14px; border-radius: 21px; outline: 0;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font: inherit; font-size: 15px;
+}
+#search:focus { border-color: var(--accent); }
+#search::placeholder { color: var(--muted); }
+.item .path { font-size: 12px; color: var(--accent); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item mark { background: var(--accent-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
 
 #empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
 

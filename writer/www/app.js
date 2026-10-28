@@ -84,11 +84,26 @@ function render() {
     autoGrow();
   }
 
+  // 搜索（仅主页）
+  $('#searchBox').hidden = !atRoot;
+  const q = atRoot ? $('#search').value.trim() : '';
+  const list = $('#list'); list.innerHTML = '';
+  if (q) {
+    const res = searchAll(q);
+    $('#childLabel').textContent = `搜索结果（${res.length}）`;
+    $('#btnOutline').hidden = true;
+    res.forEach(r => list.appendChild(resultEl(r, q)));
+    $('#empty').textContent = '没有找到匹配的内容';
+    $('#empty').hidden = res.length > 0;
+    $('#childHead').hidden = false;
+    return;
+  }
+  $('#empty').textContent = '还没有内容，点右下角 ＋ 新建';
+
   // 子条目
   $('#childLabel').textContent = atRoot ? `全部条目（${countAll(node)}）` : `子条目（${node.children.length}）`;
   $('#btnOutline').textContent = outline ? '只看本层' : '展开全部';
   $('#btnOutline').hidden = !node.children.some(c => c.children.length);
-  const list = $('#list'); list.innerHTML = '';
   const walk = (arr, lv) => arr.forEach(c => {
     list.appendChild(itemEl(c, lv));
     if (outline) walk(c.children, lv + 1);
@@ -108,6 +123,52 @@ function itemEl(n, lv) {
   if (first) { const p = document.createElement('div'); p.className = 'p'; p.textContent = first.trim(); body.appendChild(p); }
   if (n.children.length) { const c = document.createElement('div'); c.className = 'n'; c.textContent = `${n.children.length} 个子条目`; body.appendChild(c); }
   body.onclick = () => go(pathTo(n.id));
+  const more = document.createElement('button'); more.className = 'more'; more.textContent = '⋮'; more.setAttribute('aria-label', '操作');
+  more.onclick = (e) => { e.stopPropagation(); itemMenu(n); };
+  li.append(body, more);
+  return li;
+}
+
+/* ---------------- 搜索 ---------------- */
+// 在所有层级里搜标题和正文；空格分隔多个词时要求全部命中
+function searchAll(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const res = [];
+  const walk = (n, trail) => n.children.forEach(c => {
+    const hay = (c.title + '\n' + c.content).toLowerCase();
+    if (words.every(w => hay.includes(w))) res.push({ n: c, trail });
+    walk(c, [...trail, c.title || '无标题']);
+  });
+  walk(db.root, []);
+  return res;
+}
+function highlight(text, q) {
+  const words = q.split(/\s+/).filter(Boolean).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!words.length) return esc(text);
+  const re = new RegExp('(' + words.join('|') + ')', 'gi');
+  return text.split(re).map((s, i) => i % 2 ? `<mark>${esc(s)}</mark>` : esc(s)).join('');
+}
+function snippet(content, q) {
+  const flat = (content || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  const lower = flat.toLowerCase();
+  let at = -1;
+  for (const w of q.toLowerCase().split(/\s+/).filter(Boolean)) { at = lower.indexOf(w); if (at >= 0) break; }
+  if (at < 0) return flat.slice(0, 60);
+  const start = Math.max(0, at - 12);
+  return (start > 0 ? '…' : '') + flat.slice(start, start + 60);
+}
+function resultEl(r, q) {
+  const n = r.n;
+  const li = document.createElement('li'); li.className = 'item lv0';
+  const body = document.createElement('div'); body.className = 'body';
+  const t = document.createElement('div'); t.className = 't' + (n.title ? '' : ' untitled');
+  t.innerHTML = n.title ? highlight(n.title, q) : '无标题';
+  body.appendChild(t);
+  if (r.trail.length) { const pa = document.createElement('div'); pa.className = 'path'; pa.textContent = r.trail.join(' › '); body.appendChild(pa); }
+  const sn = snippet(n.content, q);
+  if (sn) { const p = document.createElement('div'); p.className = 'p'; p.innerHTML = highlight(sn, q); body.appendChild(p); }
+  body.onclick = () => { $('#search').blur(); go(pathTo(n.id)); };
   const more = document.createElement('button'); more.className = 'more'; more.textContent = '⋮'; more.setAttribute('aria-label', '操作');
   more.onclick = (e) => { e.stopPropagation(); itemMenu(n); };
   li.append(body, more);
@@ -145,10 +206,16 @@ function cleanupEmpty() {
   }
 }
 
+// 正文框随内容增高。测量时先锁住页面高度，避免文本框临时缩短导致页面被拉回顶部
 function autoGrow() {
   const t = $('#content');
+  const doc = document.documentElement;
+  const y = window.scrollY;
+  doc.style.minHeight = doc.scrollHeight + 'px';
   t.style.height = 'auto';
   t.style.height = Math.max(t.scrollHeight, window.innerHeight * 0.3) + 'px';
+  doc.style.minHeight = '';
+  if (window.scrollY !== y) window.scrollTo(0, y);
 }
 
 /* ---------------- 编辑 ---------------- */
@@ -524,6 +591,8 @@ async function init() {
   $('#btnMenu').onclick = mainMenu;
   $('#fab').onclick = addChild;
   $('#btnOutline').onclick = () => { outline = !outline; render(); };
+  $('#search').addEventListener('input', render);
+  $('#search').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#search').blur(); });
   $('#sheetMask').onclick = closeSheet;
   $('#dlgMask').addEventListener('click', (e) => { if (e.target.id === 'dlgMask' && dlgResolve) dlgResolve(); });
   window.addEventListener('resize', autoGrow);
