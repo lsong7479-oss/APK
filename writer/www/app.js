@@ -82,7 +82,9 @@ function render() {
     if (document.activeElement !== $('#title')) $('#title').value = node.title;
     if (document.activeElement !== $('#content')) $('#content').value = node.content;
     autoGrow();
+    syncHist();
   }
+  updUR();
 
   // 搜索（仅主页）
   $('#searchBox').hidden = !atRoot;
@@ -223,11 +225,123 @@ function bindEditor() {
   $('#title').addEventListener('input', (e) => {
     const n = cur(); n.title = e.target.value; n.updated = Date.now(); saveSoon();
     const c = $('#crumbs .c.cur'); if (c) c.textContent = n.title || '无标题';
+    recordEdit(e);
   });
   $('#content').addEventListener('input', (e) => {
     const n = cur(); n.content = e.target.value; n.updated = Date.now(); saveSoon(); autoGrow();
+    recordEdit(e);
   });
-  $('#title').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#content').focus(); } });
+  $('#title').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('#content').focus(); } });
+  // 实体键盘快捷键：Ctrl+Z 撤回，Ctrl+Y / Ctrl+Shift+Z 取消撤回
+  ['#title', '#content'].forEach(s => $(s).addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+  }));
+  // 记录编辑框失焦，点撤回按钮时把焦点还回去，键盘不收起
+  ['#title', '#content'].forEach(s => $(s).addEventListener('blur', (e) => { lastBlur = { el: e.target, at: Date.now() }; }));
+}
+
+/* ---------------- 撤回 / 取消撤回 ---------------- */
+// 每个条目各自一份编辑历史（本次打开 App 期间有效）。连续打字合并成一步，
+// 停顿超过 1.2 秒、一次改动很多字（全选删除、粘贴）、在打字和删除之间切换，都会分成新的一步。
+const hist = new Map();
+let lastBlur = { el: null, at: 0 };
+function curId() { return path[path.length - 1]; }
+function H() {
+  const id = curId();
+  if (!hist.has(id)) { const n = cur(); hist.set(id, { undo: [], redo: [], last: { title: n.title, content: n.content }, at: 0, start: 0, kind: '', force: false }); }
+  return hist.get(id);
+}
+function syncHist() { // 进入条目时，如果内容被别处改过（导入、恢复），以当前内容为准
+  const h = H(), n = cur();
+  if (h.last.title !== n.title || h.last.content !== n.content) { h.last = { title: n.title, content: n.content }; h.at = 0; }
+}
+function recordEdit(e) {
+  const h = H(), now = Date.now();
+  const st = { title: $('#title').value, content: $('#content').value };
+  const prev = h.last;
+  const type = (e && e.inputType) || '';
+  const kind = type.startsWith('delete') ? 'del' : 'ins';
+  const diff = Math.abs((st.title.length + st.content.length) - (prev.title.length + prev.content.length));
+  const big = diff > 12 || /paste|drop|cut|replacement/i.test(type);
+  const field = st.title !== prev.title ? 'title' : 'content';
+  if (!h.undo.length || h.force || big || now - h.at > 1200 || now - h.start > 5000 || kind !== h.kind || field !== h.field) {
+    h.undo.push(prev); if (h.undo.length > 300) h.undo.shift();
+    h.start = now;
+  }
+  h.force = big; h.at = now; h.kind = kind; h.field = field; h.last = st; h.redo = [];
+  updUR();
+}
+function undo() { const h = H(); if (h.undo.length) { h.redo.push(h.last); applyState(h.undo.pop()); } }
+function redo() { const h = H(); if (h.redo.length) { h.undo.push(h.last); applyState(h.redo.pop()); } }
+
+function applyState(st) {
+  const h = H(), n = cur();
+  const t = $('#title'), c = $('#content');
+  // 焦点被按钮抢走时还回去（键盘保持打开）
+  let active = document.activeElement;
+  if (active !== t && active !== c && lastBlur.el && Date.now() - lastBlur.at < 500) { lastBlur.el.focus(); active = document.activeElement; }
+  const typing = active === t || active === c;
+  // 光标放到改动处的末尾，不选中文字
+  const field = st.content !== c.value ? c : (st.title !== t.value ? t : null);
+  let caret = null;
+  if (field) {
+    const a = field.value, b = field === c ? st.content : st.title;
+    let p = 0; while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    let s = 0; while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+    caret = b.length - s;
+  }
+  t.value = n.title = st.title;
+  c.value = n.content = st.content;
+  n.updated = Date.now(); saveSoon(); autoGrow();
+  const cc = $('#crumbs .c.cur'); if (cc) cc.textContent = n.title || '无标题';
+  h.last = st; h.at = 0; h.kind = ''; h.force = false;
+  if (field) {
+    if (typing) { if (document.activeElement !== field) field.focus(); field.setSelectionRange(caret, caret); }
+    if (field === c) scrollToCaret(caret);
+  }
+  updUR();
+}
+// 改动处不在屏幕内时，把页面滚过去
+function scrollToCaret(pos) {
+  const c = $('#content'), cs = getComputedStyle(c);
+  const m = document.createElement('div');
+  m.style.cssText = `position:absolute;visibility:hidden;left:-9999px;top:0;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;width:${c.clientWidth}px;font:${cs.font};line-height:${cs.lineHeight};letter-spacing:${cs.letterSpacing};padding:0;`;
+  m.textContent = c.value.slice(0, pos) + '​';
+  document.body.appendChild(m);
+  const y = c.getBoundingClientRect().top + window.scrollY + m.offsetHeight;
+  m.remove();
+  const top = window.scrollY + 70, bottom = window.scrollY + window.innerHeight - 40;
+  if (y < top || y > bottom) window.scrollTo(0, Math.max(0, y - window.innerHeight / 3));
+}
+function updUR() {
+  const inNote = path.length > 1;
+  $('#btnUndo').hidden = $('#btnRedo').hidden = !inNote;
+  if (!inNote) return;
+  const h = H();
+  $('#btnUndo').disabled = !h.undo.length;
+  $('#btnRedo').disabled = !h.redo.length;
+}
+
+/* ---------------- 打字时隐藏新建按钮 ---------------- */
+let maxH = window.innerHeight, kbSeen = false;
+function updKeyboard() {
+  const vh = window.visualViewport ? Math.min(window.visualViewport.height, window.innerHeight) : window.innerHeight;
+  maxH = Math.max(maxH, window.innerHeight);
+  const shrunk = vh < maxH - 120;          // 可视区域明显变矮 = 键盘弹出
+  if (shrunk) kbSeen = true;
+  const a = document.activeElement;
+  const editing = !!a && a.matches && a.matches('input:not([type=file]), textarea');
+  // 编辑框有焦点就隐藏；如果能检测到键盘高度变化，键盘收起后（焦点还在）恢复显示
+  document.body.classList.toggle('kb', editing && (shrunk || !kbSeen));
+}
+function bindKeyboard() {
+  document.addEventListener('focusin', updKeyboard);
+  document.addEventListener('focusout', () => setTimeout(updKeyboard, 0));
+  window.addEventListener('resize', updKeyboard);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', updKeyboard);
 }
 
 function addChild() {
@@ -503,7 +617,7 @@ async function doImport(parsed) {
   if (how === 'replace') {
     if (parsed.full) { db = parsed.full; if (!db.settings) db.settings = { fontScale: 1 }; }
     else db.root.children = nodes;
-    path = ['root'];
+    path = ['root']; hist.clear();
   } else {
     here.children.push(...nodes.map(reId));
   }
@@ -535,7 +649,7 @@ async function restoreBackup() {
   if (!ok) return;
   const now = JSON.stringify(db);
   db = JSON.parse(raw); await storeSet(KEY_BACKUP, now);
-  path = ['root']; document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
+  path = ['root']; hist.clear(); document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
   await saveNow(); render(); toast('已恢复（再点一次可以换回来）');
 }
 
@@ -586,8 +700,11 @@ function handleBack() {
 async function init() {
   await load();
   document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
-  bindEditor(); bindPinch(); bindFilePick();
+  bindEditor(); bindPinch(); bindFilePick(); bindKeyboard();
   $('#btnBack').onclick = goUp;
+  ['#btnUndo', '#btnRedo'].forEach(s => $(s).addEventListener('mousedown', (e) => e.preventDefault())); // 点按钮不抢输入框焦点
+  $('#btnUndo').onclick = undo;
+  $('#btnRedo').onclick = redo;
   $('#btnMenu').onclick = mainMenu;
   $('#fab').onclick = addChild;
   $('#btnOutline').onclick = () => { outline = !outline; render(); };

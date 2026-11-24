@@ -40,6 +40,12 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #bar .icon { width: 44px; height: 44px; font-size: 26px; line-height: 44px; border-radius: 10px; }
 #bar .icon:active { background: var(--accent-soft); }
 #btnBack.hide { visibility: hidden; }
+#bar .ur { width: 40px; display: flex; align-items: center; justify-content: center; }
+#bar .ur svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#bar .ur:disabled { opacity: .28; }
+#bar .ur:disabled:active { background: none; }
+/* 键盘弹出（正在打字）时隐藏右下角的新建按钮 */
+body.kb #fab { display: none; }
 #crumbs {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px;
   overflow-x: auto; white-space: nowrap; scrollbar-width: none; font-size: 15px;

@@ -48,6 +48,15 @@ jobs:
           EOF
           grep -n "versionCode\|versionName" android/app/build.gradle
 
+      - name: 图标与键盘设置
+        run: |
+          rm -f android/app/src/main/res/mipmap-*/ic_launcher*.png
+          cp -r icon/res/. android/app/src/main/res/
+          # 键盘弹出时网页区域缩小，而不是被键盘盖住
+          sed -i 's/android:name=".MainActivity"/android:name=".MainActivity"\n            android:windowSoftInputMode="adjustResize"/' android/app/src/main/AndroidManifest.xml
+          grep -n "windowSoftInputMode" android/app/src/main/AndroidManifest.xml
+          ls android/app/src/main/res/mipmap-xxxhdpi
+
       - name: 同步网页与插件
         run: npx cap sync android
 
