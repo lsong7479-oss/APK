@@ -54,7 +54,10 @@ jobs:
           cp -r icon/res/. android/app/src/main/res/
           # 键盘弹出时网页区域缩小，而不是被键盘盖住
           sed -i 's/android:name=".MainActivity"/android:name=".MainActivity"\n            android:windowSoftInputMode="adjustResize"/' android/app/src/main/AndroidManifest.xml
-          grep -n "windowSoftInputMode" android/app/src/main/AndroidManifest.xml
+          # Android 10 及以下保存到 Documents 需要存储权限（11 以上不需要）
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />#' android/app/src/main/AndroidManifest.xml
+          sed -i '0,/<application/s//<application\n        android:requestLegacyExternalStorage="true"/' android/app/src/main/AndroidManifest.xml
+          grep -n "windowSoftInputMode\|EXTERNAL_STORAGE\|requestLegacy" android/app/src/main/AndroidManifest.xml
           ls android/app/src/main/res/mipmap-xxxhdpi
 
       - name: 同步网页与插件

@@ -21,6 +21,11 @@ let db = null;            // { app, version, root, settings }
 let path = ['root'];      // 当前所在位置（从根到当前条目的 id 列表）
 let outline = false;      // 是否展开全部层级
 let saveTimer = null;
+const KEY_VER = 'jianji_versions';
+let versions = {};        // { 条目id: [{ t, title, content }] } 每条最近 20 个历史版本
+let enteredId = null;     // 当前打开的条目（用于进入时存一个版本）
+let archOpen = false;     // 「已归档」区是否展开
+let suppressClick = 0;    // 拖动刚结束时屏蔽一次点击
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function newNode(title = '', content = '') { return { id: uid(), title, content, children: [], updated: Date.now() }; }
@@ -41,7 +46,13 @@ async function load() {
   const raw = await storeGet(KEY);
   try { db = raw ? JSON.parse(raw) : freshDb(); } catch (e) { db = freshDb(); }
   if (!db.root) db = freshDb();
+  fixDb();
+  try { versions = JSON.parse(await storeGet(KEY_VER) || '{}') || {}; } catch (e) { versions = {}; }
+  purgeTrash();
+}
+function fixDb() {
   if (!db.settings) db.settings = { fontScale: 1 };
+  if (!Array.isArray(db.trash)) db.trash = [];
 }
 function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
 async function saveNow() { clearTimeout(saveTimer); saveTimer = null; await storeSet(KEY, JSON.stringify(db)); }
@@ -53,6 +64,10 @@ function find(id, node = db.root, parent = null) {
 }
 function cur() { return find(path[path.length - 1]).node; }
 function countAll(n) { return n.children.reduce((s, c) => s + 1 + countAll(c), 0); }
+function liveKids(n) { return n.children.filter(c => !c.archived); }
+function countLive(n) { return liveKids(n).reduce((s, c) => s + 1 + countLive(c), 0); }
+function charCount(s) { return (s || '').replace(/\s/g, '').length; }
+function charsAll(n) { return charCount(n.title) + charCount(n.content) + n.children.reduce((s, c) => s + charsAll(c), 0); }
 
 /* ---------------- 渲染 ---------------- */
 function render() {
@@ -83,13 +98,16 @@ function render() {
     if (document.activeElement !== $('#content')) $('#content').value = node.content;
     autoGrow();
     syncHist();
-  }
+    if (enteredId !== node.id) { enteredId = node.id; snapVersion(node); }
+    updWC();
+  } else enteredId = null;
   updUR();
 
   // 搜索（仅主页）
   $('#searchBox').hidden = !atRoot;
   const q = atRoot ? $('#search').value.trim() : '';
   const list = $('#list'); list.innerHTML = '';
+  $('#archBox').hidden = true;
   if (q) {
     const res = searchAll(q);
     $('#childLabel').textContent = `搜索结果（${res.length}）`;
@@ -102,29 +120,40 @@ function render() {
   }
   $('#empty').textContent = '还没有内容，点右下角 ＋ 新建';
 
-  // 子条目
-  $('#childLabel').textContent = atRoot ? `全部条目（${countAll(node)}）` : `子条目（${node.children.length}）`;
+  // 子条目（归档的收进底部「已归档」区）
+  const live = liveKids(node), arch = node.children.filter(c => c.archived);
+  $('#childLabel').textContent = atRoot ? `全部条目（${countAll(node)}）` : `子条目（${live.length}）`;
   $('#btnOutline').textContent = outline ? '只看本层' : '展开全部';
-  $('#btnOutline').hidden = !node.children.some(c => c.children.length);
+  $('#btnOutline').hidden = !live.some(c => liveKids(c).length);
   const walk = (arr, lv) => arr.forEach(c => {
     list.appendChild(itemEl(c, lv));
-    if (outline) walk(c.children, lv + 1);
+    if (outline) walk(liveKids(c), lv + 1);
   });
-  walk(node.children, 0);
+  walk(live, 0);
+  $('#archBox').hidden = !arch.length;
+  $('#archHead').textContent = `${archOpen ? '▾' : '▸'} 已归档（${arch.length}）`;
+  const al = $('#archList'); al.innerHTML = ''; al.hidden = !archOpen;
+  if (archOpen) arch.forEach(c => al.appendChild(itemEl(c, 0)));
   $('#empty').hidden = node.children.length > 0 || !atRoot;
-  $('#childHead').hidden = !atRoot && node.children.length === 0;
+  $('#childHead').hidden = !atRoot && live.length === 0;
 }
 
 function itemEl(n, lv) {
   const li = document.createElement('li');
-  li.className = 'item lv' + lv;
+  li.className = 'item lv' + lv + (n.archived ? ' archived' : '');
+  li.dataset.id = n.id;
   const body = document.createElement('div'); body.className = 'body';
   const t = document.createElement('div'); t.className = 't' + (n.title ? '' : ' untitled'); t.textContent = n.title || '无标题';
   body.appendChild(t);
   const first = (n.content || '').split('\n').find(l => l.trim());
   if (first) { const p = document.createElement('div'); p.className = 'p'; p.textContent = first.trim(); body.appendChild(p); }
-  if (n.children.length) { const c = document.createElement('div'); c.className = 'n'; c.textContent = `${n.children.length} 个子条目`; body.appendChild(c); }
-  body.onclick = () => go(pathTo(n.id));
+  const kl = liveKids(n).length, ka = n.children.length - kl;
+  if (n.children.length) {
+    const c = document.createElement('div'); c.className = 'n';
+    c.textContent = kl ? `${kl} 个子条目${ka ? `（另有 ${ka} 个已归档）` : ''}` : `${ka} 个已归档子条目`;
+    body.appendChild(c);
+  }
+  body.onclick = () => { if (Date.now() - suppressClick < 350) return; go(pathTo(n.id)); };
   const more = document.createElement('button'); more.className = 'more'; more.textContent = '⋮'; more.setAttribute('aria-label', '操作');
   more.onclick = (e) => { e.stopPropagation(); itemMenu(n); };
   li.append(body, more);
@@ -136,12 +165,13 @@ function itemEl(n, lv) {
 function searchAll(q) {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   const res = [];
-  const walk = (n, trail) => n.children.forEach(c => {
+  const walk = (n, trail, inArch) => n.children.forEach(c => {
+    const arch = inArch || !!c.archived;
     const hay = (c.title + '\n' + c.content).toLowerCase();
-    if (words.every(w => hay.includes(w))) res.push({ n: c, trail });
-    walk(c, [...trail, c.title || '无标题']);
+    if (words.every(w => hay.includes(w))) res.push({ n: c, trail, arch });
+    walk(c, [...trail, c.title || '无标题'], arch);
   });
-  walk(db.root, []);
+  walk(db.root, [], false);
   return res;
 }
 function highlight(text, q) {
@@ -165,7 +195,7 @@ function resultEl(r, q) {
   const li = document.createElement('li'); li.className = 'item lv0';
   const body = document.createElement('div'); body.className = 'body';
   const t = document.createElement('div'); t.className = 't' + (n.title ? '' : ' untitled');
-  t.innerHTML = n.title ? highlight(n.title, q) : '无标题';
+  t.innerHTML = (n.title ? highlight(n.title, q) : '无标题') + (r.arch ? '<span class="tag">已归档</span>' : '');
   body.appendChild(t);
   if (r.trail.length) { const pa = document.createElement('div'); pa.className = 'path'; pa.textContent = r.trail.join(' › '); body.appendChild(pa); }
   const sn = snippet(n.content, q);
@@ -189,6 +219,7 @@ function pathTo(id) {
 }
 
 function go(newPath) {
+  const r = find(curId()); if (r && curId() !== 'root') snapVersion(r.node);
   cleanupEmpty();
   path = newPath;
   window.scrollTo(0, 0);
@@ -225,11 +256,11 @@ function bindEditor() {
   $('#title').addEventListener('input', (e) => {
     const n = cur(); n.title = e.target.value; n.updated = Date.now(); saveSoon();
     const c = $('#crumbs .c.cur'); if (c) c.textContent = n.title || '无标题';
-    recordEdit(e);
+    recordEdit(e); updWC();
   });
   $('#content').addEventListener('input', (e) => {
     const n = cur(); n.content = e.target.value; n.updated = Date.now(); saveSoon(); autoGrow();
-    recordEdit(e);
+    recordEdit(e); updWC();
   });
   $('#title').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('#content').focus(); } });
   // 实体键盘快捷键：Ctrl+Z 撤回，Ctrl+Y / Ctrl+Shift+Z 取消撤回
@@ -271,8 +302,62 @@ function recordEdit(e) {
     h.undo.push(prev); if (h.undo.length > 300) h.undo.shift();
     h.start = now;
   }
+  // 历史版本：一次改动很多字之前先存一版；连续编辑时每 3 分钟存一版
+  const id = curId();
+  if (big && diff > 30) snapVersion({ id, ...prev });
+  if (now - (verAt[id] || 0) > 180000) { snapVersion({ id, ...st }); }
   h.force = big; h.at = now; h.kind = kind; h.field = field; h.last = st; h.redo = [];
   updUR();
+}
+
+/* ---------------- 字数 ---------------- */
+function updWC() {
+  const n = cur();
+  const self = charCount(n.title) + charCount(n.content);
+  $('#wc').textContent = n.children.length ? `本条 ${self} 字 · 含子条目共 ${charsAll(n)} 字` : `${self} 字`;
+}
+
+/* ---------------- 历史版本 ---------------- */
+const verAt = {};
+let verTimer = null;
+function snapVersion(n) {
+  const title = n.title || '', content = n.content || '';
+  if (!title.trim() && !content.trim()) return;
+  const arr = versions[n.id] || (versions[n.id] = []);
+  const last = arr[arr.length - 1];
+  verAt[n.id] = Date.now();
+  if (last && last.title === title && last.content === content) return;
+  arr.push({ t: Date.now(), title, content });
+  if (arr.length > 20) arr.shift();
+  clearTimeout(verTimer); verTimer = setTimeout(saveVersions, 800);
+}
+function saveVersions() { clearTimeout(verTimer); verTimer = null; return storeSet(KEY_VER, JSON.stringify(versions)); }
+function fmtTime(t) {
+  const d = new Date(t), p = (x) => String(x).padStart(2, '0');
+  const today = new Date(); const sameDay = d.toDateString() === today.toDateString();
+  return (sameDay ? '今天 ' : `${d.getMonth() + 1}月${d.getDate()}日 `) + `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function versionsView(n) {
+  if (curId() === n.id) snapVersion(n);
+  const arr = (versions[n.id] || []).slice().reverse();
+  if (!arr.length) { toast('这个条目还没有历史版本'); return; }
+  openSheet(`「${n.title || '无标题'}」的历史版本（最近 ${arr.length} 个）`, arr.map((v, i) => ({
+    label: fmtTime(v.t) + (i === 0 && v.title === n.title && v.content === n.content ? '（当前）' : ''),
+    sub: `${charCount(v.title) + charCount(v.content)} 字 · ${(v.title || '无标题')}｜${(v.content.split('\n').find(l => l.trim()) || '').trim().slice(0, 30)}`,
+    fn: () => previewVersion(n, v),
+  })));
+}
+async function previewVersion(n, v) {
+  const ok = await dialog(fmtTime(v.t) + ' 的版本', `<div class="prev"><b>${esc(v.title || '无标题')}</b>${esc(v.content)}</div>`,
+    [{ label: '返回', value: false }, { label: '恢复这个版本', value: true, cls: 'primary' }]);
+  if (!ok) { versionsView(n); return; }
+  if (!find(n.id)) { toast('这个条目已不存在'); return; }
+  snapVersion(n); // 恢复前先把现在的内容存一版
+  if (curId() !== n.id) go(pathTo(n.id));
+  const h = H(); h.undo.push(h.last); h.redo = [];
+  applyState({ title: v.title, content: v.content });
+  snapVersion(cur()); saveNow();
+  toast('已恢复，点撤回可以换回去');
 }
 function undo() { const h = H(); if (h.undo.length) { h.redo.push(h.last); applyState(h.undo.pop()); } }
 function redo() { const h = H(); if (h.redo.length) { h.undo.push(h.last); applyState(h.redo.pop()); } }
@@ -357,46 +442,177 @@ function addChild() {
 /* ---------------- 条目操作 ---------------- */
 function itemMenu(n) {
   const { parent } = find(n.id);
-  const sib = parent.children; const i = sib.indexOf(n);
+  const sib = parent.children;
+  const live = liveKids(parent); const i = live.indexOf(n);
+  const swap = (a, b) => { const x = sib.indexOf(a), y = sib.indexOf(b); sib[x] = b; sib[y] = a; };
+  const arch = !!n.archived;
   const rows = [
-    { label: '上移', hide: i === 0, fn: () => { sib.splice(i, 1); sib.splice(i - 1, 0, n); } },
-    { label: '下移', hide: i === sib.length - 1, fn: () => { sib.splice(i, 1); sib.splice(i + 1, 0, n); } },
-    { label: '降一级', sub: '变成上一个条目的子条目', hide: i === 0, fn: () => { sib.splice(i, 1); sib[i - 1].children.push(n); } },
-    { label: '升一级', sub: '移到上一层，排在原上级后面', hide: parent.id === 'root', fn: () => {
-        const gp = find(parent.id).parent; sib.splice(i, 1);
+    { label: '上移', hide: arch || i <= 0, fn: () => swap(n, live[i - 1]) },
+    { label: '下移', hide: arch || i === live.length - 1, fn: () => swap(n, live[i + 1]) },
+    { label: '降一级', sub: '变成上一个条目的子条目', hide: arch || i <= 0, fn: () => { sib.splice(sib.indexOf(n), 1); live[i - 1].children.push(n); } },
+    { label: '升一级', sub: '移到上一层，排在原上级后面', hide: arch || parent.id === 'root', fn: () => {
+        const gp = find(parent.id).parent; sib.splice(sib.indexOf(n), 1);
         gp.children.splice(gp.children.indexOf(parent) + 1, 0, n);
       } },
-    { label: '导出为图片', sub: '含它的所有子条目', fn: () => exportImage(n), keep: true },
-    { label: '导出为文本', sub: 'Markdown，含所有子条目', fn: () => exportText(n), keep: true },
-    { label: '删除', danger: true, fn: async () => {
-        const total = countAll(n);
-        const ok = await dialog('删除条目', `确定删除「${esc(n.title || '无标题')}」${total ? `及其 ${total} 个子条目` : ''}？`,
-          [{ label: '取消', value: false }, { label: '删除', value: true, cls: 'danger' }]);
-        if (ok) { sib.splice(sib.indexOf(n), 1); saveSoon(); render(); toast('已删除'); }
+    { label: arch ? '取消归档' : '归档', sub: arch ? '放回列表' : '收进本层底部的「已归档」，导出给 AI 时不包含',
+      fn: () => {
+        if (arch) { delete n.archived; sib.splice(sib.indexOf(n), 1); sib.push(n); toast('已取消归档'); }
+        else { n.archived = true; toast('已归档，在列表底部「已归档」里'); }
+      } },
+    { label: '历史版本', sub: '查看并恢复这一条以前的内容', fn: () => versionsView(n), keep: true },
+    { label: '导出为图片', sub: '含子条目（不含已归档）', fn: () => exportImage(n), keep: true },
+    { label: '导出为文本 / 给 AI 整理', sub: 'Markdown，含子条目（不含已归档）', fn: () => exportText(n), keep: true },
+    { label: '删除', sub: '移到回收站，30 天内可以还原', danger: true, fn: () => {
+        moveToTrash(n, parent); render(); toast('已移到回收站，可在菜单里还原');
       }, keep: true },
   ];
-  openSheet(n.title || '无标题', rows.filter(r => !r.hide).map(r => ({
+  openSheet((n.title || '无标题') + (arch ? '（已归档）' : ''), rows.filter(r => !r.hide).map(r => ({
     ...r, fn: () => { r.fn(); if (!r.keep) { saveSoon(); render(); } }
   })));
+}
+
+/* ---------------- 回收站 ---------------- */
+const TRASH_DAYS = 30;
+function moveToTrash(n, parent) {
+  const sib = parent.children;
+  db.trash.unshift({ node: n, parentId: parent.id, index: sib.indexOf(n), at: Date.now() });
+  sib.splice(sib.indexOf(n), 1);
+  hist.delete(n.id);
+  saveSoon();
+}
+function purgeTrash() {
+  const limit = Date.now() - TRASH_DAYS * 86400000;
+  const gone = db.trash.filter(e => e.at < limit);
+  if (!gone.length) return;
+  db.trash = db.trash.filter(e => e.at >= limit);
+  const drop = (n) => { delete versions[n.id]; n.children.forEach(drop); };
+  gone.forEach(e => drop(e.node));
+  saveSoon(); saveVersions();
+}
+function trashView() {
+  purgeTrash();
+  if (!db.trash.length) { toast('回收站是空的'); return; }
+  const rows = db.trash.map(e => {
+    const days = Math.max(0, TRASH_DAYS - Math.floor((Date.now() - e.at) / 86400000));
+    const kids = countAll(e.node);
+    return { label: e.node.title || '无标题', sub: `${fmtTime(e.at)} 删除${kids ? ` · 含 ${kids} 个子条目` : ''} · ${days} 天后彻底删除`, fn: () => trashItem(e) };
+  });
+  rows.push({ sep: true }, { label: '清空回收站', danger: true, fn: async () => {
+    const ok = await dialog('清空回收站', `彻底删除回收站里的 ${db.trash.length} 个条目？之后无法恢复。`, [{ label: '取消', value: false }, { label: '彻底删除', value: true, cls: 'danger' }]);
+    if (ok) { const drop = (n) => { delete versions[n.id]; n.children.forEach(drop); }; db.trash.forEach(e => drop(e.node)); db.trash = []; saveSoon(); saveVersions(); toast('回收站已清空'); }
+  } });
+  openSheet(`回收站（删除 ${TRASH_DAYS} 天后自动彻底删除）`, rows);
+}
+async function trashItem(e) {
+  const n = e.node, kids = countAll(n);
+  const how = await dialog('回收站', `<div class="prev"><b>${esc(n.title || '无标题')}</b>${esc(n.content || '')}${kids ? `\n\n<span class="muted">另有 ${kids} 个子条目</span>` : ''}</div>`,
+    [{ label: '返回', value: 'back' }, { label: '彻底删除', value: 'del', cls: 'danger' }, { label: '还原', value: 'restore', cls: 'primary' }]);
+  if (how === 'back' || !how) { trashView(); return; }
+  db.trash.splice(db.trash.indexOf(e), 1);
+  if (how === 'del') {
+    const drop = (x) => { delete versions[x.id]; x.children.forEach(drop); }; drop(n); saveVersions();
+    saveSoon(); toast('已彻底删除'); return;
+  }
+  const r = find(e.parentId); const parent = r ? r.node : db.root;
+  parent.children.splice(Math.min(e.index, parent.children.length), 0, n);
+  saveSoon(); render();
+  toast(`已还原到「${parent.id === 'root' ? '全部' : (parent.title || '无标题')}」`);
+}
+
+/* ---------------- 长按拖动排序 ---------------- */
+let drag = null;
+function canDrag() { return !outline && !(path.length === 1 && $('#search').value.trim()); }
+function bindDrag() {
+  const list = $('#list');
+  list.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || !canDrag()) return;
+    const li = e.target.closest('.item'); if (!li || e.target.closest('.more')) return;
+    const t = e.touches[0];
+    drag = { li, x: t.clientX, y: t.clientY, fy: t.clientY, active: false, timer: setTimeout(startDrag, 420) };
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!drag) return;
+    const t = e.touches[0];
+    if (!drag.active) { if (e.touches.length > 1 || Math.hypot(t.clientX - drag.x, t.clientY - drag.y) > 8) cancelDrag(); return; }
+    e.preventDefault();
+    drag.fy = t.clientY; moveDrag();
+  }, { passive: false });
+  document.addEventListener('touchend', endDrag);
+  document.addEventListener('touchcancel', endDrag);
+  list.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+function startDrag() {
+  const d = drag; if (!d) return;
+  d.active = true;
+  d.startDocY = d.y + window.scrollY;
+  d.elStartTop = d.li.getBoundingClientRect().top + window.scrollY;
+  d.li.classList.add('dragging');
+  document.body.classList.add('dragmode');
+  try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}
+  d.raf = requestAnimationFrame(tickDrag);
+}
+function moveDrag() {
+  const d = drag, li = d.li;
+  const want = d.elStartTop + (d.fy + window.scrollY - d.startDocY);   // 条目应该在的位置（跟着手指）
+  li.style.transform = '';
+  const mid = want + li.offsetHeight / 2;
+  const midOf = (el) => el.getBoundingClientRect().top + window.scrollY + el.offsetHeight / 2;
+  let prev = li.previousElementSibling, next = li.nextElementSibling;
+  while (prev && mid < midOf(prev)) { li.parentNode.insertBefore(li, prev); prev = li.previousElementSibling; }
+  while (next && mid > midOf(next)) { li.parentNode.insertBefore(next, li); next = li.nextElementSibling; }
+  li.style.transform = `translateY(${want - (li.getBoundingClientRect().top + window.scrollY)}px)`;
+}
+function tickDrag() { // 拖到屏幕上下边缘时自动滚动
+  if (!drag || !drag.active) return;
+  const y = drag.fy, edge = 90;
+  let dy = 0;
+  if (y < edge + 52) dy = -Math.ceil((edge + 52 - y) / 7);
+  else if (y > window.innerHeight - edge) dy = Math.ceil((y - window.innerHeight + edge) / 7);
+  if (dy) { window.scrollBy(0, dy); moveDrag(); }
+  drag.raf = requestAnimationFrame(tickDrag);
+}
+function cancelDrag() { if (drag) { clearTimeout(drag.timer); drag = null; } }
+function endDrag() {
+  const d = drag; if (!d) return;
+  clearTimeout(d.timer); drag = null;
+  if (!d.active) return;
+  cancelAnimationFrame(d.raf);
+  suppressClick = Date.now();
+  d.li.classList.remove('dragging'); d.li.style.transform = '';
+  document.body.classList.remove('dragmode');
+  const node = cur();
+  const before = liveKids(node);
+  const order = [...$('#list').children].map(li => before.find(c => c.id === li.dataset.id)).filter(Boolean);
+  if (order.length === before.length && order.some((c, i) => c !== before[i])) {
+    node.children = [...order, ...node.children.filter(c => c.archived)];
+    saveSoon();
+  }
+  render();
 }
 
 function mainMenu() {
   const n = cur(); const atRoot = path.length === 1;
   const scale = Math.round((db.settings.fontScale || 1) * 100);
   const sheet = $('#sheet');
+  const ab = db.settings.autoBackupError ? `上次失败：${db.settings.autoBackupError}`
+    : (db.settings.lastAutoBackup ? `每天自动存一份，最近一次 ${db.settings.lastAutoBackup}` : '每天自动存一份到 Documents/简记/自动备份');
   openSheet(null, [
     { html: `<div class="zoom"><button data-z="-1">A−</button><span>字号 ${scale}%</span><button data-z="1">A+</button></div>` },
     { sep: true },
-    { label: atRoot ? '导出全部为图片' : '导出当前条目为图片', sub: '长图，含子条目', fn: () => exportImage(n) },
-    { label: '整体导出（给 AI 整理）', sub: 'Markdown 文本：分享 / 保存 / 复制', fn: () => exportText(db.root) },
-    { label: '完整备份', sub: 'JSON 文件，可原样恢复', fn: () => exportJson() },
+    { label: '本条历史版本', sub: '查看并恢复这一条以前的内容', hide: atRoot, fn: () => versionsView(n) },
+    { label: atRoot ? '导出全部为图片' : '导出当前条目为图片', sub: '长图，含子条目（不含已归档）', fn: () => exportImage(n) },
+    { label: '导出当前条目给 AI', sub: '整理好后用「粘贴文本导入 → 替换当前条目」导回', hide: atRoot, fn: () => exportText(n) },
+    { label: '整体导出（给 AI 整理）', sub: 'Markdown 文本，不含已归档', fn: () => exportText(db.root) },
+    { label: '完整备份', sub: 'JSON 文件，含全部内容，可原样恢复', fn: () => exportJson() },
+    { label: '立即自动备份', sub: ab, hide: !isNative(), fn: () => autoBackup(true) },
     { sep: true },
     { label: '导入文件', sub: '.md / .txt / .json', fn: () => $('#filePick').click() },
     { label: '粘贴文本导入', sub: '把 AI 整理好的内容粘贴进来', fn: () => pasteImport() },
     { label: '恢复导入前的数据', sub: '撤销上一次导入', fn: () => restoreBackup() },
+    { label: `回收站（${db.trash.length}）`, sub: `删除的条目保留 ${TRASH_DAYS} 天`, fn: () => trashView() },
     { sep: true },
     { label: '使用说明', fn: () => help() },
-  ]);
+  ].filter(r => !r.hide));
   sheet.querySelectorAll('[data-z]').forEach(b => b.onclick = () => {
     setScale((db.settings.fontScale || 1) + Number(b.dataset.z) * 0.1);
     sheet.querySelector('.zoom span').textContent = `字号 ${Math.round(db.settings.fontScale * 100)}%`;
@@ -455,9 +671,9 @@ function toMarkdown(node) {
     const body = (n.content || '').replace(/\s+$/, '');
     if (body) out.push(body.split('\n').map(l => /^\s*#/.test(l) ? '\\' + l : l).join('\n'));
     out.push('');
-    n.children.forEach(c => put(c, lv + 1));
+    liveKids(n).forEach(c => put(c, lv + 1));
   };
-  if (node.id === 'root') node.children.forEach(c => put(c, 1)); else put(node, 1);
+  if (node.id === 'root') liveKids(node).forEach(c => put(c, 1)); else put(node, 1);
   return out.join('\n');
 }
 
@@ -470,7 +686,11 @@ function safeName(s) { return (s || '无标题').replace(/[\\/:*?"<>|\s]+/g, '_'
 async function exportText(node) {
   const md = toMarkdown(node);
   const name = `简记-${node.id === 'root' ? '全部' : safeName(node.title)}-${stamp()}.md`;
-  const how = await dialog('导出文本', `共 ${node.id === 'root' ? countAll(node) : countAll(node) + 1} 个条目，${md.length} 字符。<br>交给 AI 整理时，直接把文字粘贴给它，或者发送文件都可以。`,
+  const nLive = countLive(node) + (node.id === 'root' ? 0 : 1);
+  const nArch = countAll(node) - countLive(node);
+  const back = node.id === 'root' ? '整理好后：菜单 →「粘贴文本导入」→「替换全部」。'
+    : '整理好后：进入这个条目，菜单 →「粘贴文本导入」→「替换当前条目」，其他内容不受影响。';
+  const how = await dialog('导出文本', `共 ${nLive} 个条目，${md.length} 字符${nArch ? `（已归档的 ${nArch} 个条目不包含在内）` : ''}。<br>交给 AI 整理时，直接把文字粘贴给它，或者发送文件都可以。<br>${back}`,
     [{ label: '取消', value: null }, { label: '保存到手机', value: 'save' }, { label: '分享', value: 'share' }, { label: '复制', value: 'copy', cls: 'primary' }]);
   if (how === 'copy') { await copyText(md) ? toast('已复制，可直接粘贴给 AI') : toast('复制失败，请改用分享'); }
   else if (how) await outputFile(name, md, 'text/markdown', how);
@@ -498,10 +718,10 @@ async function exportImage(node) {
     const w = document.createElement('div'); w.className = 'rn';
     const h = document.createElement('div'); h.className = 'rh'; h.textContent = n.title || '无标题'; w.appendChild(h);
     if (n.content.trim()) { const c = document.createElement('div'); c.className = 'rc'; c.textContent = n.content.replace(/\s+$/, ''); w.appendChild(c); }
-    walk(n.children, w);
+    walk(liveKids(n), w);
     parentEl.appendChild(w);
   });
-  walk(node.children, rd);
+  walk(liveKids(node), rd);
   const f = document.createElement('div'); f.className = 'foot'; f.textContent = new Date().toLocaleDateString('zh-CN'); rd.appendChild(f);
   box.appendChild(rd);
   try {
@@ -609,20 +829,70 @@ async function doImport(parsed) {
   const total = nodes.reduce((s, n) => s + 1 + countAll(n), 0);
   if (!total) { toast('没有识别到内容'); return; }
   const here = cur(); const atRoot = path.length === 1;
-  const btns = [{ label: '取消', value: null }, { label: '替换全部', value: 'replace', cls: 'danger' },
-    { label: atRoot ? '追加' : '追加到当前条目下', value: 'append', cls: 'primary' }];
-  const how = await dialog('导入', `识别到 ${total} 个条目（第一层 ${nodes.length} 个）。<br>「替换全部」会清空现有内容，但会自动保留一份导入前的备份，可在菜单里恢复。`, btns);
+  const btns = [{ label: '取消', value: null }, { label: '替换全部', value: 'replace', cls: 'danger' }];
+  if (!atRoot && !parsed.full) btns.push({ label: '替换当前条目', value: 'replaceNode', cls: 'primary' });
+  btns.push({ label: atRoot ? '追加' : '追加到当前条目下', value: 'append', cls: atRoot || parsed.full ? 'primary' : '' });
+  const tip = atRoot ? '' : `<br>「替换当前条目」只换掉「${esc(here.title || '无标题')}」和它的子条目（已归档的子条目保留），其他内容不受影响。`;
+  const how = await dialog('导入', `识别到 ${total} 个条目（第一层 ${nodes.length} 个）。<br>「替换全部」会清空现有内容。${tip}<br>替换前都会自动保留备份：可用菜单里的「恢复导入前的数据」，被换掉的旧内容也会放进回收站。`, btns);
   if (!how) return;
   await storeSet(KEY_BACKUP, JSON.stringify(db));
   if (how === 'replace') {
-    if (parsed.full) { db = parsed.full; if (!db.settings) db.settings = { fontScale: 1 }; }
+    if (parsed.full) { db = parsed.full; fixDb(); }
     else db.root.children = nodes;
     path = ['root']; hist.clear();
+  } else if (how === 'replaceNode') {
+    const r = find(here.id);
+    // 旧内容的副本放进回收站，随时可以找回
+    const copy = reId(JSON.parse(JSON.stringify(here)));
+    copy.title = (here.title || '无标题') + '（替换前）';
+    db.trash.unshift({ node: copy, parentId: r.parent.id, index: r.parent.children.indexOf(here) + 1, at: Date.now() });
+    snapVersion(here);
+    const keepArch = here.children.filter(c => c.archived);
+    if (nodes.length === 1) {
+      const src = nodes[0];
+      here.title = src.title; here.content = src.content;
+      here.children = [...src.children.map(reId), ...keepArch];
+    } else { // AI 拆成了多个第一层条目：都放到当前条目下面，正文清空
+      here.content = '';
+      here.children = [...nodes.map(reId), ...keepArch];
+    }
+    here.updated = Date.now();
+    hist.delete(here.id); enteredId = null;
+    window.scrollTo(0, 0);
   } else {
     here.children.push(...nodes.map(reId));
   }
   document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
-  await saveNow(); render(); toast(`已导入 ${total} 个条目`);
+  await saveNow(); render(); toast(how === 'replaceNode' ? '已替换当前条目，旧内容在回收站' : `已导入 ${total} 个条目`);
+}
+
+/* ---------------- 每日自动备份 ---------------- */
+// 每天第一次打开时，在 手机存储/Documents/简记/自动备份 里存一份完整备份，保留最近 7 份
+async function autoBackup(manual = false) {
+  const { Filesystem } = P();
+  if (!isNative() || !Filesystem) return;
+  const today = stamp().slice(0, 8);
+  if (!manual && db.settings.lastAutoBackup && db.settings.lastAutoBackup.replace(/-/g, '') === today) return;
+  if (!manual && !countAll(db.root)) return;
+  const dir = '简记/自动备份';
+  try {
+    try { const p = await Filesystem.checkPermissions(); if (p.publicStorage !== 'granted') await Filesystem.requestPermissions(); } catch (e) {}
+    await Filesystem.writeFile({ path: `${dir}/简记自动备份-${stamp()}.json`, data: JSON.stringify(db), directory: 'DOCUMENTS', encoding: 'utf8', recursive: true });
+    db.settings.lastAutoBackup = `${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6)}`;
+    delete db.settings.autoBackupError;
+    saveSoon();
+    try {
+      const r = await Filesystem.readdir({ path: dir, directory: 'DOCUMENTS' });
+      const names = r.files.map(f => typeof f === 'string' ? f : f.name).filter(x => /^简记自动备份-.*\.json$/.test(x)).sort();
+      for (const x of names.slice(0, Math.max(0, names.length - 7))) {
+        try { await Filesystem.deleteFile({ path: `${dir}/${x}`, directory: 'DOCUMENTS' }); } catch (e) {}
+      }
+    } catch (e) {}
+    if (manual) toast('已备份到 手机存储/Documents/简记/自动备份');
+  } catch (e) {
+    db.settings.autoBackupError = String((e && e.message) || e).slice(0, 60); saveSoon();
+    if (manual) toast('备份失败：' + db.settings.autoBackupError);
+  }
 }
 
 function bindFilePick() {
@@ -648,17 +918,21 @@ async function restoreBackup() {
   const ok = await dialog('恢复导入前的数据', '会用上一次导入前的数据替换当前全部内容。', [{ label: '取消', value: false }, { label: '恢复', value: true, cls: 'primary' }]);
   if (!ok) return;
   const now = JSON.stringify(db);
-  db = JSON.parse(raw); await storeSet(KEY_BACKUP, now);
+  db = JSON.parse(raw); fixDb(); await storeSet(KEY_BACKUP, now);
   path = ['root']; hist.clear(); document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
   await saveNow(); render(); toast('已恢复（再点一次可以换回来）');
 }
 
 function help() {
   dialog('使用说明', `
-  <b>分级</b>：每个条目都可以有子条目。点条目进入，在里面点 ＋ 新建下一级；条目右侧 ⋮ 可以上移、下移、升级、降级。<br>
-  <b>缩放</b>：两指捏合调整字号，菜单里也有 A− / A+。「展开全部」可以一次看到所有层级。<br>
-  <b>导出图片</b>：菜单或条目 ⋮ 里导出，会连同子条目生成一张长图。<br>
-  <b>交给 AI 整理</b>：菜单 →「整体导出」→ 复制，粘贴给 AI，请它保持 # 层级格式整理；把结果复制回来，菜单 →「粘贴文本导入」→ 替换全部。导入前会自动备份，不满意可以恢复。<br>
+  <b>分级</b>：每个条目都可以有子条目。点条目进入，在里面点 ＋ 新建下一级；条目右侧 ⋮ 可以升级、降级。<br>
+  <b>排序</b>：长按条目，浮起来后拖到想要的位置松手。<br>
+  <b>归档</b>：⋮ →「归档」，条目收进本层底部的「已归档」，导出给 AI 时不包含，搜索时仍能搜到。<br>
+  <b>撤回</b>：编辑时顶栏的 ↶ ↷。<b>历史版本</b>：⋮ 或菜单里「历史版本」，每条保留最近 20 个版本。<br>
+  <b>回收站</b>：删除的条目保留 30 天，菜单 →「回收站」可以还原。<br>
+  <b>自动备份</b>：每天第一次打开时，自动存一份到 手机存储/Documents/简记/自动备份，保留最近 7 份；用「导入文件」选它就能恢复。<br>
+  <b>缩放</b>：两指捏合调整字号，菜单里也有 A− / A+。<br>
+  <b>交给 AI 整理</b>：整体：菜单 →「整体导出」→ 复制给 AI，整理后「粘贴文本导入」→「替换全部」。单条：进入条目，菜单 →「导出当前条目给 AI」，整理后在同一条目里「粘贴文本导入」→「替换当前条目」。<br>
   内容自动保存在本机。`, [{ label: '知道了', value: true, cls: 'primary' }]);
 }
 
@@ -700,7 +974,8 @@ function handleBack() {
 async function init() {
   await load();
   document.documentElement.style.setProperty('--fs', db.settings.fontScale || 1);
-  bindEditor(); bindPinch(); bindFilePick(); bindKeyboard();
+  bindEditor(); bindPinch(); bindFilePick(); bindKeyboard(); bindDrag();
+  $('#archHead').onclick = () => { archOpen = !archOpen; render(); };
   $('#btnBack').onclick = goUp;
   ['#btnUndo', '#btnRedo'].forEach(s => $(s).addEventListener('mousedown', (e) => e.preventDefault())); // 点按钮不抢输入框焦点
   $('#btnUndo').onclick = undo;
@@ -713,13 +988,15 @@ async function init() {
   $('#sheetMask').onclick = closeSheet;
   $('#dlgMask').addEventListener('click', (e) => { if (e.target.id === 'dlgMask' && dlgResolve) dlgResolve(); });
   window.addEventListener('resize', autoGrow);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
+  const onLeave = () => { if (curId() !== 'root') snapVersion(cur()); saveNow(); saveVersions(); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) onLeave(); });
   const A = P().App;
   if (A) {
     A.addListener('backButton', handleBack);
-    A.addListener('pause', saveNow);
+    A.addListener('pause', onLeave);
   }
   render();
+  setTimeout(() => autoBackup(false), 1500);
 }
 
 window.jianji = { parseMarkdown, toMarkdown, parseAny, get db() { return db; } }; // 方便调试

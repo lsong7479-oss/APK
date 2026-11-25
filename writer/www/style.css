@@ -107,6 +107,37 @@ main { padding: 12px 16px 120px; max-width: 760px; margin: 0 auto; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item mark { background: var(--accent-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
 
+/* 字数 */
+#wc { font-size: 12px; color: var(--muted); text-align: right; padding: 6px 0 0; min-height: 18px; }
+
+/* 长按拖动 */
+.item { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.item.dragging {
+  position: relative; z-index: 10; border-color: var(--accent);
+  box-shadow: 0 8px 22px rgba(0,0,0,.18); background: var(--card);
+}
+body.dragmode, body.dragmode * { -webkit-user-select: none; user-select: none; }
+
+/* 归档 */
+#archBox { margin-top: 18px; }
+#archHead {
+  width: 100%; text-align: left; font-size: 13px; color: var(--muted);
+  padding: 8px 2px; border-top: 1px solid var(--line);
+}
+#archList { list-style: none; margin: 4px 0 0; padding: 0; }
+.item.archived { opacity: .62; }
+.tag { display: inline-block; font-size: 11px; font-weight: 400; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0 5px; margin-left: 6px; vertical-align: 2px; }
+
+/* 历史版本 / 回收站预览 */
+.prev {
+  max-height: 46vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  font-size: 14px; line-height: 1.65; margin-top: 8px;
+}
+.prev b { display: block; font-size: 15px; margin-bottom: 6px; }
+.muted { color: var(--muted); font-size: 13px; }
+
 #empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
 
 #fab {
